@@ -1,29 +1,22 @@
-import os
-from gevent import monkey
-
-monkey.patch_all()
-from flask import Flask, request
-from gevent import wsgi
-import tensorflow as tf
-import numpy as np
 import collections
-model_name='./model/trained_variables.ckpt-49'
-os.environ["CUDA_VISIBLE_DEVICES"] = ""  # 不使用GPU
-batch_size = 1
-input_data = tf.placeholder(tf.int32, [batch_size, None])
-output_targets = tf.placeholder(tf.int32, [batch_size, None])
-poetry_file = './data/poetry_all.txt'
-graph = tf.get_default_graph()
+import numpy as np
+import tensorflow as tf
+import re
+tf.reset_default_graph()
+# -------------------------------数据预处理---------------------------#
+poetry_file = 'shakespeare.txt'
 # 诗集
 poetrys = []
+special_character_removal = re.compile(r'[^A-Za-z_\d,.?! ]', re.IGNORECASE)
 with open(poetry_file, "r", encoding='utf-8', ) as f:
     for line in f:
         try:
-            title, content = line.strip().split(':')
-            content = content.replace(' ', '')
-            if '_' in content or '(' in content or '（' in content or '《' in content or '[' in content:
-                continue
-            if len(content) < 5 or len(content) > 79:
+            content = line.strip().lower()
+            content = special_character_removal.sub('', content)
+            content = content.replace(' ', '|')
+            # if '_' in content or '(' in content or '（' in content or '《' in content or '[' in content:
+            #     continue
+            if len(content) < 10 or len(content) > 100:
                 continue
             content = '[' + content + ']'
             poetrys.append(content)
@@ -33,14 +26,19 @@ with open(poetry_file, "r", encoding='utf-8', ) as f:
 # 按诗的字数排序
 poetrys = sorted(poetrys, key=lambda line: len(line))
 print('唐诗总数: ', len(poetrys))
+print(poetrys[0])
 
-# 统计每个字出现次数
 all_words = []
 for poetry in poetrys:
     all_words += [word for word in poetry]
 counter = collections.Counter(all_words)
 count_pairs = sorted(counter.items(), key=lambda x: -x[1])
 words, _ = zip(*count_pairs)
+# 取前多少个常用字
+words = words[:len(words)] + (' ',)
+# 每个字映射为一个数字ID
+word_num_map = dict(zip(words, range(len(words))))
+print(word_num_map)
 
 # 取前多少个常用字
 words = words[:len(words)] + (' ',)
@@ -54,6 +52,7 @@ poetrys_vector = [list(map(to_num, poetry)) for poetry in poetrys]
 # ....]
 
 # 每次取64首诗进行训练
+batch_size = 256
 n_chunk = len(poetrys_vector) // batch_size
 x_batches = []
 y_batches = []
@@ -76,18 +75,13 @@ for i in range(n_chunk):
     x_batches.append(xdata)
     y_batches.append(ydata)
 
+# ---------------------------------------RNN--------------------------------------#
 
-def to_word(weights):
-    sample = np.argmax(weights)
-    if sample > len(words):
-        print('error')
-        sample = len(words) - 1
-    return words[sample]
+input_data = tf.placeholder(tf.int32, [batch_size, None])
+output_targets = tf.placeholder(tf.int32, [batch_size, None])
 
-
-keep_prob = 0.7
-
-
+keep_prob = 0.9
+# 定义RNN
 def neural_network(model='lstm', rnn_size=128, num_layers=2):
     if model == 'rnn':
         cell_fun = tf.nn.rnn_cell.BasicRNNCell
@@ -96,21 +90,18 @@ def neural_network(model='lstm', rnn_size=128, num_layers=2):
     elif model == 'lstm':
         cell_fun = tf.nn.rnn_cell.BasicLSTMCell
 
-    cell = cell_fun(rnn_size, state_is_tuple=True)
-    # state_is_tuple=True的时候，state是元组形式，state=(c,h)。
-    # 如果是False，那么state是一个由c和h拼接起来的张量，state=tf.concat(1,[c,h])
-    cell = tf.nn.rnn_cell.DropoutWrapper(cell, output_keep_prob=keep_prob)
 
+    cell = cell_fun(rnn_size, state_is_tuple=True)
+    cell = tf.nn.rnn_cell.DropoutWrapper(cell, output_keep_prob=keep_prob)
     cell = tf.nn.rnn_cell.MultiRNNCell([cell] * num_layers, state_is_tuple=True)
-    # 2层的LSTM网络，前一层的LSTM的输出作为后一层的输入
+
     initial_state = cell.zero_state(batch_size, tf.float32)
-    # 使用zero_state即可对各种状态进行初始化
-    # 如果是生成模式，output_data为None，则初始状态shape为[1 * rnn_size]
+
     with tf.variable_scope('rnnlm'):
         softmax_w = tf.get_variable("softmax_w", [rnn_size, len(words) + 1])
         softmax_b = tf.get_variable("softmax_b", [len(words) + 1])
         with tf.device("/cpu:0"):
-            embedding = tf.get_variable("embedding", [len(words) + 1, rnn_size])  # vocab size * hidden size
+            embedding = tf.get_variable("embedding", [len(words) + 1, rnn_size])
             inputs = tf.nn.embedding_lookup(embedding, input_data)
 
     outputs, last_state = tf.nn.dynamic_rnn(cell, inputs, initial_state=initial_state, scope='rnnlm')
@@ -121,51 +112,56 @@ def neural_network(model='lstm', rnn_size=128, num_layers=2):
     return logits, last_state, probs, cell, initial_state
 
 
-with graph.as_default():
-    _, last_state, probs, cell, initial_state = neural_network()
-    sess = tf.Session()  # 创建tensorflow session，也可以在这里载入tensorflow模型
-    sess.run(tf.initialize_all_variables())
-    saver = tf.train.Saver(tf.all_variables())
-    saver.restore(sess, model_name)
-    app = Flask(__name__)
+# 训练
+def train_neural_network():
+    logits, last_state,probs, cell, initial_state = neural_network()
+    targets = tf.reshape(output_targets, [-1])
+    # labels = tf.one_hot(tf.reshape(output_data, [-1]), depth=vocab_size + 1)
+    # loss = tf.nn.softmax_cross_entropy_with_logits(labels=labels, logits=logits)
+    loss = tf.contrib.legacy_seq2seq.sequence_loss_by_example([logits], [targets], [tf.ones_like(targets, dtype=tf.float32)],
+                                                  len(words))
+    cost = tf.reduce_mean(loss)
+    learning_rate = tf.Variable(0.0, trainable=False)
+    tvars = tf.trainable_variables()
+    grads, _ = tf.clip_by_global_norm(tf.gradients(cost, tvars), 5)
+    optimizer = tf.train.AdamOptimizer(learning_rate)
+    train_op = optimizer.apply_gradients(zip(grads, tvars))
 
+    with tf.Session() as sess:
+        sess.run(tf.initialize_all_variables())
 
-@app.route('/')
-def index():
-    return 'Hello World'
+        saver = tf.train.Saver(tf.all_variables())
+        for epoch in range(50):
+            sess.run(tf.assign(learning_rate, 0.002 * (0.97 ** epoch)))
+            n = 0
+            for batche in range(n_chunk):
+                train_loss, _, _ = sess.run([cost, last_state, train_op],
+                                            feed_dict={input_data: x_batches[n], output_targets: y_batches[n]})
+                n += 1
+                # print(epoch, batche, train_loss)
+            if epoch % 7 == 0:
+                print(epoch)
+                saver.save(sess, "./trained_variables.ckpt", global_step=epoch)
 
+        def to_word(weights):
+            t = np.cumsum(weights)
+            s = np.sum(weights)
+            sample = int(np.searchsorted(t, np.random.rand(1) * s))
+            return words[sample]
 
-@app.route('/peom')
-def response_request():
-    begin_word = request.args.get('text', '')
-    with graph.as_default():
         state_ = sess.run(cell.zero_state(1, tf.float32))
 
         x = np.array([list(map(word_num_map.get, '['))])
         [probs_, state_] = sess.run([probs, last_state], feed_dict={input_data: x, initial_state: state_})
-        # 如果指定开始的字
-        begin_word_list = [s for s in begin_word]
-        begin_word_list.reverse()
+        word = to_word(probs_)
+        # word = words[np.argmax(probs_)]
         poem = ''
-        if begin_word_list:
-            word = begin_word_list[-1]
-        else:
-            word = to_word(probs_)
-        while (word != ']' or len(poem) < 24) and len(poem)<50:
-            if begin_word_list:
-                word = begin_word_list.pop()
-            else:
-                word = to_word(probs_)
-            print(word,)
+        while word != ']':
             poem += word
             x = np.zeros((1, 1))
             x[0, 0] = word_num_map[word]
             [probs_, state_] = sess.run([probs, last_state], feed_dict={input_data: x, initial_state: state_})
             word = to_word(probs_)
-        print("\n")
-        return str(poem)
-
-
-if __name__ == "__main__":
-    server = wsgi.WSGIServer(('0.0.0.0', 19877), app)
-    server.serve_forever()
+        # word = words[np.argmax(probs_)]
+        print(poem)
+train_neural_network()

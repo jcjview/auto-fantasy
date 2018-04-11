@@ -1,31 +1,41 @@
 import collections
 import numpy as np
 import tensorflow as tf
-
-# -------------------------------数据预处理---------------------------#
 import time
-
-poetry_file = 'poetry.txt'
-
+import re
+poetry_file = 'data/poetry_budda.txt'
+special_character_removal = re.compile(r'[^\w。， ]', re.IGNORECASE)
 # 诗集
 poetrys = []
+count=0
 with open(poetry_file, "r", encoding='utf-8', ) as f:
     for line in f:
         try:
             title, content = line.strip().split(':')
+            content = special_character_removal.sub('', content)
             content = content.replace(' ', '')
-            if '_' in content or '(' in content or '（' in content or '《' in content or '[' in content:
+            if len(content) < 5:
                 continue
-            if len(content) < 5 or len(content) > 79:
-                continue
-            content = '[' + content + ']'
-            poetrys.append(content)
+            if(len(content)>12*6):
+                content_list=content.split("。")
+                for i in range(0,len(content_list)-1,2):
+                    count += 1
+                    content_temp='[' + content_list[i]+"。"+content_list[i+1] + '。]'
+                    content_temp=content_temp.replace("。。","。")
+                    if len(content_temp) < 5:
+                        continue
+                    poetrys.append(content_temp)
+            else:
+                content = '[' + content + ']'
+                poetrys.append(content)
         except Exception as e:
-            pass
+            print(e)
 
 # 按诗的字数排序
 poetrys = sorted(poetrys, key=lambda line: len(line))
 print('唐诗总数: ', len(poetrys))
+print(poetrys[0])
+print(count)
 
 # 统计每个字出现次数
 all_words = []
@@ -133,7 +143,7 @@ def gen_poetry(begin_word=None):
     with tf.Session() as sess:
         sess.run(tf.initialize_all_variables())
         saver = tf.train.Saver(tf.all_variables())
-        saver.restore(sess,'./trained_variables.ckpt-48')
+        saver.restore(sess,'./model/trained_variables.ckpt-50')
 
         state_ = sess.run(cell.zero_state(1, tf.float32))
 
@@ -164,4 +174,4 @@ def gen_poetry(begin_word=None):
 # tf.reset_default_graph()
 # print(gen_poetry('一'))
 # tf.reset_default_graph()
-print(gen_poetry(''))
+print(gen_poetry('净'))

@@ -4,21 +4,28 @@ import tensorflow as tf
 
 # -------------------------------数据预处理---------------------------#
 
-poetry_file = 'poetry.txt'
-
+import re
+poetry_file = 'data/poetry_budda.txt'
+special_character_removal = re.compile(r'[^\w。， ]', re.IGNORECASE)
 # 诗集
 poetrys = []
 with open(poetry_file, "r", encoding='utf-8', ) as f:
     for line in f:
         try:
             title, content = line.strip().split(':')
+            content = special_character_removal.sub('', content)
             content = content.replace(' ', '')
-            if '_' in content or '(' in content or '（' in content or '《' in content or '[' in content:
+            if len(content) < 5:
                 continue
-            if len(content) < 5 or len(content) > 79:
-                continue
-            content = '[' + content + ']'
-            poetrys.append(content)
+            if(len(content)>12*6):
+                content_list=content.split("。")
+                for i in range(0,len(content_list),2):
+                    content_temp='[' + content_list[i]+"。"+content_list[i+1] + '。]'
+                    content_temp=content_temp.replace("。。","。")
+                    poetrys.append(content_temp)
+            else:
+                content = '[' + content + ']'
+                poetrys.append(content)
         except Exception as e:
             pass
 

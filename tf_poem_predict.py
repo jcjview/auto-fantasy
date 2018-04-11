@@ -87,11 +87,11 @@ def neural_network(model='lstm', rnn_size=128, num_layers=2):
     cell = cell_fun(rnn_size, state_is_tuple=True)
 #state_is_tuple=True的时候，state是元组形式，state=(c,h)。
 # 如果是False，那么state是一个由c和h拼接起来的张量，state=tf.concat(1,[c,h])
-#     cell = tf.nn.rnn_cell.DropoutWrapper(cell, output_keep_prob=keep_prob)
+    cell = tf.nn.rnn_cell.DropoutWrapper(cell, output_keep_prob=keep_prob)
 
     cell = tf.nn.rnn_cell.MultiRNNCell([cell] * num_layers, state_is_tuple=True)
 #2层的LSTM网络，前一层的LSTM的输出作为后一层的输入
-    initial_state = cell.zero_state(1, tf.float32)
+    initial_state = cell.zero_state(batch_size, tf.float32)
 #使用zero_state即可对各种状态进行初始化
 # 如果是生成模式，output_data为None，则初始状态shape为[1 * rnn_size]
     with tf.variable_scope('rnnlm'):
@@ -118,8 +118,10 @@ def gen_poetry(begin_word=None):
         # s = np.sum(weights)
         # sample = int(np.searchsorted(t, np.random.rand(1) * s))
         # return words[sample]
+
         sample = np.argmax(weights)
         if sample > len(words):
+            print('error')
             sample = len(words) - 1
         return words[sample]
 
@@ -158,4 +160,4 @@ def gen_poetry(begin_word=None):
 # tf.reset_default_graph()
 # print(gen_poetry('一'))
 # tf.reset_default_graph()
-print(gen_poetry('卧看'))
+print(gen_poetry('神'))
